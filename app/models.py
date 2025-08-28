@@ -1,448 +1,528 @@
 from sqlmodel import SQLModel, Field, Relationship, JSON, Column
-from sqlalchemy import DateTime, func
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional, List, Dict, Any
-from enum import Enum
-import uuid
 from decimal import Decimal
+from enum import Enum
 
 
-# Enums for various status fields
+# Enums for various statuses
 class UserRole(str, Enum):
-    admin = "admin"
-    kepala_lab = "kepala_lab"
-    laboran = "laboran"
-    dosen = "dosen"
-    mahasiswa = "mahasiswa"
+    ADMIN = "admin"
+    HEAD_LAB = "head_lab"
+    LABORAN = "laboran"
+    LECTURER = "lecturer"
+    STUDENT = "student"
+
+
+class UserStatus(str, Enum):
+    PENDING = "pending"
+    VERIFIED = "verified"
+    SUSPENDED = "suspended"
 
 
 class EquipmentStatus(str, Enum):
-    available = "available"
-    in_use = "in_use"
-    maintenance = "maintenance"
-    decommissioned = "decommissioned"
+    AVAILABLE = "available"
+    IN_USE = "in_use"
+    MAINTENANCE = "maintenance"
+    DAMAGED = "damaged"
 
 
-class LoanStatus(str, Enum):
-    pending = "pending"
-    needs_head_approval = "needs_head_approval"
-    approved = "approved"
-    rejected = "rejected"
-    cancelled = "cancelled"
-    in_use = "in_use"
-    returned = "returned"
-    late = "late"
+class BorrowingStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED_LABORAN = "approved_laboran"
+    APPROVED_HEAD = "approved_head"
+    CHECKED_OUT = "checked_out"
+    CHECKED_IN = "checked_in"
+    OVERDUE = "overdue"
+    CANCELLED = "cancelled"
 
 
-class MaintenanceType(str, Enum):
-    maintenance = "maintenance"
-    calibration = "calibration"
-    repair = "repair"
+class NotificationStatus(str, Enum):
+    UNREAD = "unread"
+    READ = "read"
 
 
 class NotificationType(str, Enum):
-    pending_registration = "pending_registration"
-    verification = "verification"
-    new_request = "new_request"
-    approve_reject = "approve_reject"
-    due_today = "due_today"
-    overdue = "overdue"
-    password_reset = "password_reset"
+    USER_REGISTRATION = "user_registration"
+    USER_VERIFICATION = "user_verification"
+    BORROWING_REQUEST = "borrowing_request"
+    BORROWING_APPROVED = "borrowing_approved"
+    BORROWING_REJECTED = "borrowing_rejected"
+    EQUIPMENT_DUE = "equipment_due"
+    EQUIPMENT_OVERDUE = "equipment_overdue"
+    EQUIPMENT_RETURNED = "equipment_returned"
+    EQUIPMENT_DAMAGED = "equipment_damaged"
+    MAINTENANCE_SCHEDULED = "maintenance_scheduled"
+
+
+class MaintenanceType(str, Enum):
+    PREVENTIVE = "preventive"
+    CORRECTIVE = "corrective"
+    EMERGENCY = "emergency"
+
+
+class MaintenanceStatus(str, Enum):
+    SCHEDULED = "scheduled"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class AuditAction(str, Enum):
+    CREATE = "create"
+    UPDATE = "update"
+    DELETE = "delete"
+    LOGIN = "login"
+    LOGOUT = "logout"
+    APPROVE = "approve"
+    REJECT = "reject"
+    CHECKOUT = "checkout"
+    CHECKIN = "checkin"
 
 
 # Persistent models (stored in database)
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    name: str = Field(max_length=100)
-    email: str = Field(unique=True, max_length=255, index=True)
-    role: UserRole = Field(index=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(unique=True, max_length=255, regex=r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
     password_hash: str = Field(max_length=255)
-    is_active: bool = Field(default=True, index=True)
-    is_verified: bool = Field(default=False, index=True)
-    npm: Optional[str] = Field(default=None, max_length=20, index=True)  # For mahasiswa
-    nip: Optional[str] = Field(default=None, max_length=30, index=True)  # For staff
+    full_name: str = Field(max_length=100)
+    nim_nik: Optional[str] = Field(default=None, max_length=50)  # NIM for students, NIK for staff
+    role: UserRole = Field(default=UserRole.STUDENT)
+    status: UserStatus = Field(default=UserStatus.PENDING)
     phone: Optional[str] = Field(default=None, max_length=20)
-    lab_id: Optional[str] = Field(default=None, foreign_key="labs.id")
-    must_change_password: bool = Field(default=False)
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    last_login: Optional[datetime] = Field(default=None)
+    verified_at: Optional[datetime] = Field(default=None)
+    verified_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
 
     # Relationships
-    lab: Optional["Lab"] = Relationship(back_populates="laborans")
-    loans_as_borrower: List["Loan"] = Relationship(
-        back_populates="borrower", sa_relationship_kwargs={"foreign_keys": "[Loan.borrower_id]"}
+    verified_by: Optional["User"] = Relationship(
+        back_populates="verified_users", sa_relationship_kwargs={"remote_side": "User.id", "post_update": True}
     )
-    loans_as_supervisor: List["Loan"] = Relationship(
-        back_populates="supervisor", sa_relationship_kwargs={"foreign_keys": "[Loan.supervisor_id]"}
-    )
+    verified_users: List["User"] = Relationship(back_populates="verified_by")
+    borrowings: List["Borrowing"] = Relationship(back_populates="user")
     notifications: List["Notification"] = Relationship(back_populates="user")
     audit_logs: List["AuditLog"] = Relationship(back_populates="user")
-    training_certificates: List["TrainingCertificate"] = Relationship(back_populates="user")
+    lab_memberships: List["LabMember"] = Relationship(back_populates="user")
 
 
 class Lab(SQLModel, table=True):
     __tablename__ = "labs"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    code: str = Field(unique=True, max_length=10, index=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(max_length=100)
+    code: str = Field(unique=True, max_length=20)
+    description: str = Field(default="")
     location: str = Field(max_length=200)
-    capacity: int = Field(ge=1)
-    operating_hours: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
-    head_id: Optional[str] = Field(default=None, foreign_key="users.id")
-    contact_person: str = Field(max_length=100)
-    contact_email: str = Field(max_length=255)
-    rules_pdf: Optional[str] = Field(default=None, max_length=500)  # File path
-    sop_pdf: Optional[str] = Field(default=None, max_length=500)  # File path
-    gallery: List[str] = Field(default=[], sa_column=Column(JSON))  # Image paths
-    description: str = Field(default="", max_length=2000)
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
+    capacity: int = Field(default=0)
+    operating_hours: str = Field(default="")
+    contact_email: Optional[str] = Field(default=None, max_length=255)
+    contact_phone: Optional[str] = Field(default=None, max_length=20)
+    rules_document: Optional[str] = Field(default=None)  # PDF file path
+    sop_document: Optional[str] = Field(default=None)  # PDF file path
+    gallery: List[str] = Field(default=[], sa_column=Column(JSON))  # Image file paths
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
-    head: Optional["User"] = Relationship(sa_relationship_kwargs={"foreign_keys": "[Lab.head_id]", "post_update": True})
-    laborans: List["User"] = Relationship(back_populates="lab")
     equipment: List["Equipment"] = Relationship(back_populates="lab")
-    loans: List["Loan"] = Relationship(back_populates="lab")
+    members: List["LabMember"] = Relationship(back_populates="lab")
+
+
+class LabMember(SQLModel, table=True):
+    __tablename__ = "lab_members"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    lab_id: int = Field(foreign_key="labs.id")
+    user_id: int = Field(foreign_key="users.id")
+    role: str = Field(max_length=50)  # "head", "laboran", "member"
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    lab: Lab = Relationship(back_populates="members")
+    user: User = Relationship(back_populates="lab_memberships")
+
+
+class EquipmentCategory(SQLModel, table=True):
+    __tablename__ = "equipment_categories"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=100)
+    description: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    equipment: List["Equipment"] = Relationship(back_populates="category")
 
 
 class Equipment(SQLModel, table=True):
     __tablename__ = "equipment"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    lab_id: str = Field(foreign_key="labs.id", index=True)
-    code: str = Field(max_length=50, index=True)  # Unique per lab
+    id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(max_length=200)
+    code: str = Field(unique=True, max_length=50)
+    category_id: int = Field(foreign_key="equipment_categories.id")
+    lab_id: int = Field(foreign_key="labs.id")
+    description: str = Field(default="")
+    specifications: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
     brand: Optional[str] = Field(default=None, max_length=100)
     model: Optional[str] = Field(default=None, max_length=100)
-    serial_no: Optional[str] = Field(default=None, max_length=100)
-    image: Optional[str] = Field(default=None, max_length=500)  # Image path
-    specification: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
-    manual_pdf: Optional[str] = Field(default=None, max_length=500)  # File path
-    status: EquipmentStatus = Field(default=EquipmentStatus.available, index=True)
+    serial_number: Optional[str] = Field(default=None, max_length=100)
+    purchase_date: Optional[datetime] = Field(default=None)
+    purchase_price: Optional[Decimal] = Field(default=Decimal("0"), max_digits=15, decimal_places=2)
+    condition: str = Field(default="good")  # good, fair, poor
+    status: EquipmentStatus = Field(default=EquipmentStatus.AVAILABLE)
     needs_head_approval: bool = Field(default=False)
-    calibration_due_date: Optional[date] = Field(default=None)
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
+    image_path: Optional[str] = Field(default=None)
+    manual_document: Optional[str] = Field(default=None)  # PDF file path
+    qr_code_path: Optional[str] = Field(default=None)
+    maintenance_interval_days: int = Field(default=365)  # Days between maintenance
+    last_maintenance: Optional[datetime] = Field(default=None)
+    next_maintenance: Optional[datetime] = Field(default=None)
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
-    lab: "Lab" = Relationship(back_populates="equipment")
-    loans: List["Loan"] = Relationship(back_populates="equipment")
-    maintenance_records: List["Maintenance"] = Relationship(back_populates="equipment")
-    training_certificates: List["TrainingCertificate"] = Relationship(back_populates="equipment")
+    category: EquipmentCategory = Relationship(back_populates="equipment")
+    lab: Lab = Relationship(back_populates="equipment")
+    borrowings: List["Borrowing"] = Relationship(back_populates="equipment")
+    maintenance_records: List["MaintenanceRecord"] = Relationship(back_populates="equipment")
+    availability_slots: List["EquipmentAvailability"] = Relationship(back_populates="equipment")
 
 
-class Loan(SQLModel, table=True):
-    __tablename__ = "loans"  # type: ignore[assignment]
+class EquipmentAvailability(SQLModel, table=True):
+    __tablename__ = "equipment_availability"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    equipment_id: str = Field(foreign_key="equipment.id", index=True)
-    borrower_id: str = Field(foreign_key="users.id", index=True)
-    supervisor_id: Optional[str] = Field(default=None, foreign_key="users.id")
-    lab_id: str = Field(foreign_key="labs.id", index=True)  # Denormalized
-    start_time: datetime = Field(index=True)
-    end_time: datetime = Field(index=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    equipment_id: int = Field(foreign_key="equipment.id")
+    date: datetime = Field()
+    start_time: str = Field(max_length=5)  # HH:MM format
+    end_time: str = Field(max_length=5)  # HH:MM format
+    is_blocked: bool = Field(default=False)  # True if blocked for maintenance/other reasons
+    block_reason: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    equipment: Equipment = Relationship(back_populates="availability_slots")
+
+
+class Borrowing(SQLModel, table=True):
+    __tablename__ = "borrowings"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    equipment_id: int = Field(foreign_key="equipment.id")
+    status: BorrowingStatus = Field(default=BorrowingStatus.PENDING)
+    start_datetime: datetime = Field()
+    end_datetime: datetime = Field()
+    actual_return_datetime: Optional[datetime] = Field(default=None)
     purpose: str = Field(max_length=500)
-    course: Optional[str] = Field(default=None, max_length=100)
-    project: Optional[str] = Field(default=None, max_length=200)
-    jsa_pdf: str = Field(max_length=500)  # Mandatory JSA file path
-    status: LoanStatus = Field(default=LoanStatus.pending, index=True)
-    approved_by: Optional[str] = Field(default=None, foreign_key="users.id")
-    head_approved_by: Optional[str] = Field(default=None, foreign_key="users.id")
-    checkout_by: Optional[str] = Field(default=None, foreign_key="users.id")
-    checkin_by: Optional[str] = Field(default=None, foreign_key="users.id")
-    checkout_condition: Optional[str] = Field(default=None, max_length=1000)
-    checkin_condition: Optional[str] = Field(default=None, max_length=1000)
-    photo_before: Optional[str] = Field(default=None, max_length=500)
-    photo_after: Optional[str] = Field(default=None, max_length=500)
-    late_minutes: int = Field(default=0)
-    damage_report: Optional[str] = Field(default=None, max_length=2000)
-    damage_cost: Optional[Decimal] = Field(default=None, decimal_places=2, max_digits=12)
-    notes: Optional[str] = Field(default=None, max_length=1000)
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
+    jsa_document: Optional[str] = Field(default=None)  # JSA PDF file path
+    notes: str = Field(default="")
+
+    # Approval tracking
+    approved_by_laboran_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    approved_by_laboran_at: Optional[datetime] = Field(default=None)
+    approved_by_head_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    approved_by_head_at: Optional[datetime] = Field(default=None)
+
+    # Condition tracking
+    condition_before: str = Field(default="good")
+    condition_after: Optional[str] = Field(default=None)
+    damage_report: Optional[str] = Field(default=None)
+
+    # Check-in/out tracking
+    checked_out_at: Optional[datetime] = Field(default=None)
+    checked_out_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    checked_in_at: Optional[datetime] = Field(default=None)
+    checked_in_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
-    equipment: "Equipment" = Relationship(back_populates="loans")
-    borrower: "User" = Relationship(
-        back_populates="loans_as_borrower", sa_relationship_kwargs={"foreign_keys": "[Loan.borrower_id]"}
-    )
-    supervisor: Optional["User"] = Relationship(
-        back_populates="loans_as_supervisor", sa_relationship_kwargs={"foreign_keys": "[Loan.supervisor_id]"}
-    )
-    lab: "Lab" = Relationship(back_populates="loans")
+    user: User = Relationship(back_populates="borrowings")
+    equipment: Equipment = Relationship(back_populates="borrowings")
 
 
-class Maintenance(SQLModel, table=True):
-    __tablename__ = "maintenance"  # type: ignore[assignment]
+class MaintenanceRecord(SQLModel, table=True):
+    __tablename__ = "maintenance_records"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    equipment_id: str = Field(foreign_key="equipment.id", index=True)
-    type: MaintenanceType = Field(index=True)
-    date: datetime = Field(index=True)
-    notes: str = Field(max_length=2000)
-    doc_pdf: Optional[str] = Field(default=None, max_length=500)
-    cost: Optional[Decimal] = Field(default=None, decimal_places=2, max_digits=12)
-    performed_by: Optional[str] = Field(default=None, max_length=200)
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), server_default=func.now())
-    )
+    id: Optional[int] = Field(default=None, primary_key=True)
+    equipment_id: int = Field(foreign_key="equipment.id")
+    maintenance_type: MaintenanceType = Field()
+    status: MaintenanceStatus = Field(default=MaintenanceStatus.SCHEDULED)
+    scheduled_date: datetime = Field()
+    completed_date: Optional[datetime] = Field(default=None)
+    performed_by: Optional[str] = Field(default=None, max_length=100)
+    description: str = Field()
+    cost: Optional[Decimal] = Field(default=Decimal("0"), max_digits=10, decimal_places=2)
+    notes: str = Field(default="")
+    attachments: List[str] = Field(default=[], sa_column=Column(JSON))  # File paths
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
-    equipment: "Equipment" = Relationship(back_populates="maintenance_records")
+    equipment: Equipment = Relationship(back_populates="maintenance_records")
 
 
 class Notification(SQLModel, table=True):
     __tablename__ = "notifications"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    user_id: str = Field(foreign_key="users.id", index=True)
-    type: NotificationType = Field(index=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    type: NotificationType = Field()
     title: str = Field(max_length=200)
-    message: str = Field(max_length=1000)
-    payload: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
-    is_read: bool = Field(default=False, index=True)
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now(), index=True))
+    message: str = Field()
+    status: NotificationStatus = Field(default=NotificationStatus.UNREAD)
+    related_id: Optional[int] = Field(default=None)  # ID of related entity (borrowing, user, etc.)
+    related_type: Optional[str] = Field(default=None, max_length=50)  # Type of related entity
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    read_at: Optional[datetime] = Field(default=None)
 
     # Relationships
-    user: "User" = Relationship(back_populates="notifications")
+    user: User = Relationship(back_populates="notifications")
 
 
 class AuditLog(SQLModel, table=True):
     __tablename__ = "audit_logs"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    user_id: Optional[str] = Field(default=None, foreign_key="users.id", index=True)
-    action: str = Field(max_length=100, index=True)
-    entity: str = Field(max_length=100, index=True)
-    entity_id: Optional[str] = Field(default=None, max_length=36, index=True)
-    detail: Dict[str, Any] = Field(default={}, sa_column=Column(JSON))
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    action: AuditAction = Field()
+    entity_type: str = Field(max_length=50)  # Table/model name
+    entity_id: Optional[int] = Field(default=None)
+    old_values: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+    new_values: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
     ip_address: Optional[str] = Field(default=None, max_length=45)
-    user_agent: Optional[str] = Field(default=None, max_length=500)
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now(), index=True))
+    user_agent: Optional[str] = Field(default=None)
+    description: str = Field(default="")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
-    user: Optional["User"] = Relationship(back_populates="audit_logs")
+    user: Optional[User] = Relationship(back_populates="audit_logs")
 
 
-class Setting(SQLModel, table=True):
-    __tablename__ = "settings"  # type: ignore[assignment]
+class AppContent(SQLModel, table=True):
+    __tablename__ = "app_content"  # type: ignore[assignment]
 
-    key: str = Field(primary_key=True, max_length=100)
-    value: Dict[str, Any] = Field(sa_column=Column(JSON))
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(unique=True, max_length=100)  # landing_page_content, about_us, etc.
+    content: str = Field()  # Markdown content
+    content_type: str = Field(default="markdown", max_length=20)
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
 
 
-class TrainingCertificate(SQLModel, table=True):
-    __tablename__ = "training_certificates"  # type: ignore[assignment]
+class HelpTicket(SQLModel, table=True):
+    __tablename__ = "help_tickets"  # type: ignore[assignment]
 
-    id: Optional[str] = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
-    user_id: str = Field(foreign_key="users.id", index=True)
-    equipment_id: str = Field(foreign_key="equipment.id", index=True)
-    issued_at: datetime = Field(sa_column=Column(DateTime(timezone=True), server_default=func.now()))
-    expires_at: Optional[datetime] = Field(default=None)
-    certificate_pdf: Optional[str] = Field(default=None, max_length=500)
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True), server_default=func.now())
-    )
-
-    # Relationships
-    user: "User" = Relationship(back_populates="training_certificates")
-    equipment: "Equipment" = Relationship(back_populates="training_certificates")
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id")
+    subject: str = Field(max_length=200)
+    message: str = Field()
+    status: str = Field(default="open", max_length=20)  # open, in_progress, resolved, closed
+    priority: str = Field(default="normal", max_length=20)  # low, normal, high, urgent
+    category: str = Field(default="general", max_length=50)  # general, password_reset, account, technical
+    assigned_to_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    resolved_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # Non-persistent schemas (for validation, forms, API requests/responses)
+
+
 class UserCreate(SQLModel, table=False):
-    name: str = Field(max_length=100)
-    email: str = Field(max_length=255)
-    role: UserRole
-    npm: Optional[str] = Field(default=None, max_length=20)
-    nip: Optional[str] = Field(default=None, max_length=30)
+    email: str = Field(max_length=255, regex=r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+    password: str = Field(min_length=8, max_length=100)
+    full_name: str = Field(max_length=100)
+    nim_nik: Optional[str] = Field(default=None, max_length=50)
+    role: UserRole = Field(default=UserRole.STUDENT)
     phone: Optional[str] = Field(default=None, max_length=20)
-    lab_id: Optional[str] = Field(default=None, max_length=36)
 
 
 class UserUpdate(SQLModel, table=False):
-    name: Optional[str] = Field(default=None, max_length=100)
+    email: Optional[str] = Field(default=None, max_length=255)
+    full_name: Optional[str] = Field(default=None, max_length=100)
+    nim_nik: Optional[str] = Field(default=None, max_length=50)
     phone: Optional[str] = Field(default=None, max_length=20)
-    lab_id: Optional[str] = Field(default=None, max_length=36)
-    is_active: Optional[bool] = Field(default=None)
+    role: Optional[UserRole] = Field(default=None)
+    status: Optional[UserStatus] = Field(default=None)
 
 
-class StudentRegister(SQLModel, table=False):
-    name: str = Field(max_length=100)
+class UserLogin(SQLModel, table=False):
     email: str = Field(max_length=255)
-    npm: str = Field(max_length=20)
-    phone: Optional[str] = Field(default=None, max_length=20)
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=1, max_length=100)
 
 
 class PasswordReset(SQLModel, table=False):
-    user_id: str = Field(max_length=36)
-    new_password: str = Field(min_length=8, max_length=128)
+    email: str = Field(max_length=255)
+    new_password: str = Field(min_length=8, max_length=100)
+    confirm_password: str = Field(min_length=8, max_length=100)
 
 
 class LabCreate(SQLModel, table=False):
-    code: str = Field(max_length=10)
     name: str = Field(max_length=100)
+    code: str = Field(max_length=20)
+    description: str = Field(default="")
     location: str = Field(max_length=200)
-    capacity: int = Field(ge=1)
-    operating_hours: Dict[str, Any] = Field(default={})
-    head_id: Optional[str] = Field(default=None, max_length=36)
-    contact_person: str = Field(max_length=100)
-    contact_email: str = Field(max_length=255)
-    description: str = Field(default="", max_length=2000)
+    capacity: int = Field(default=0)
+    operating_hours: str = Field(default="")
+    contact_email: Optional[str] = Field(default=None, max_length=255)
+    contact_phone: Optional[str] = Field(default=None, max_length=20)
 
 
 class LabUpdate(SQLModel, table=False):
     name: Optional[str] = Field(default=None, max_length=100)
+    code: Optional[str] = Field(default=None, max_length=20)
+    description: Optional[str] = Field(default=None)
     location: Optional[str] = Field(default=None, max_length=200)
-    capacity: Optional[int] = Field(default=None, ge=1)
-    operating_hours: Optional[Dict[str, Any]] = Field(default=None)
-    head_id: Optional[str] = Field(default=None, max_length=36)
-    contact_person: Optional[str] = Field(default=None, max_length=100)
+    capacity: Optional[int] = Field(default=None)
+    operating_hours: Optional[str] = Field(default=None)
     contact_email: Optional[str] = Field(default=None, max_length=255)
-    description: Optional[str] = Field(default=None, max_length=2000)
+    contact_phone: Optional[str] = Field(default=None, max_length=20)
+    is_active: Optional[bool] = Field(default=None)
 
 
 class EquipmentCreate(SQLModel, table=False):
-    lab_id: str = Field(max_length=36)
-    code: str = Field(max_length=50)
     name: str = Field(max_length=200)
+    code: str = Field(max_length=50)
+    category_id: int
+    lab_id: int
+    description: str = Field(default="")
+    specifications: Dict[str, Any] = Field(default={})
     brand: Optional[str] = Field(default=None, max_length=100)
     model: Optional[str] = Field(default=None, max_length=100)
-    serial_no: Optional[str] = Field(default=None, max_length=100)
-    specification: Dict[str, Any] = Field(default={})
+    serial_number: Optional[str] = Field(default=None, max_length=100)
+    purchase_date: Optional[datetime] = Field(default=None)
+    purchase_price: Optional[Decimal] = Field(default=Decimal("0"))
+    condition: str = Field(default="good")
     needs_head_approval: bool = Field(default=False)
-    calibration_due_date: Optional[date] = Field(default=None)
+    maintenance_interval_days: int = Field(default=365)
 
 
 class EquipmentUpdate(SQLModel, table=False):
     name: Optional[str] = Field(default=None, max_length=200)
+    category_id: Optional[int] = Field(default=None)
+    lab_id: Optional[int] = Field(default=None)
+    description: Optional[str] = Field(default=None)
+    specifications: Optional[Dict[str, Any]] = Field(default=None)
     brand: Optional[str] = Field(default=None, max_length=100)
     model: Optional[str] = Field(default=None, max_length=100)
-    serial_no: Optional[str] = Field(default=None, max_length=100)
-    specification: Optional[Dict[str, Any]] = Field(default=None)
+    serial_number: Optional[str] = Field(default=None, max_length=100)
+    condition: Optional[str] = Field(default=None)
     status: Optional[EquipmentStatus] = Field(default=None)
     needs_head_approval: Optional[bool] = Field(default=None)
-    calibration_due_date: Optional[date] = Field(default=None)
+    maintenance_interval_days: Optional[int] = Field(default=None)
+    is_active: Optional[bool] = Field(default=None)
 
 
-class LoanCreate(SQLModel, table=False):
-    equipment_id: str = Field(max_length=36)
-    supervisor_id: Optional[str] = Field(default=None, max_length=36)
-    start_time: datetime
-    end_time: datetime
+class BorrowingCreate(SQLModel, table=False):
+    equipment_id: int
+    start_datetime: datetime
+    end_datetime: datetime
     purpose: str = Field(max_length=500)
-    course: Optional[str] = Field(default=None, max_length=100)
-    project: Optional[str] = Field(default=None, max_length=200)
-    notes: Optional[str] = Field(default=None, max_length=1000)
+    notes: str = Field(default="")
 
 
-class LoanUpdate(SQLModel, table=False):
-    status: Optional[LoanStatus] = Field(default=None)
-    checkout_condition: Optional[str] = Field(default=None, max_length=1000)
-    checkin_condition: Optional[str] = Field(default=None, max_length=1000)
-    damage_report: Optional[str] = Field(default=None, max_length=2000)
-    damage_cost: Optional[Decimal] = Field(default=None, decimal_places=2, max_digits=12)
-
-
-class MaintenanceCreate(SQLModel, table=False):
-    equipment_id: str = Field(max_length=36)
-    type: MaintenanceType
-    date: datetime
-    notes: str = Field(max_length=2000)
-    cost: Optional[Decimal] = Field(default=None, decimal_places=2, max_digits=12)
-    performed_by: Optional[str] = Field(default=None, max_length=200)
+class BorrowingUpdate(SQLModel, table=False):
+    status: Optional[BorrowingStatus] = Field(default=None)
+    notes: Optional[str] = Field(default=None)
+    condition_after: Optional[str] = Field(default=None)
+    damage_report: Optional[str] = Field(default=None)
 
 
 class NotificationCreate(SQLModel, table=False):
-    user_id: str = Field(max_length=36)
+    user_id: int
     type: NotificationType
     title: str = Field(max_length=200)
-    message: str = Field(max_length=1000)
-    payload: Dict[str, Any] = Field(default={})
+    message: str
+    related_id: Optional[int] = Field(default=None)
+    related_type: Optional[str] = Field(default=None, max_length=50)
 
 
-class AuditLogCreate(SQLModel, table=False):
-    user_id: Optional[str] = Field(default=None, max_length=36)
-    action: str = Field(max_length=100)
-    entity: str = Field(max_length=100)
-    entity_id: Optional[str] = Field(default=None, max_length=36)
-    detail: Dict[str, Any] = Field(default={})
-    ip_address: Optional[str] = Field(default=None, max_length=45)
-    user_agent: Optional[str] = Field(default=None, max_length=500)
-
-
-class SettingUpdate(SQLModel, table=False):
-    value: Dict[str, Any]
-
-
-class TrainingCertificateCreate(SQLModel, table=False):
-    user_id: str = Field(max_length=36)
-    equipment_id: str = Field(max_length=36)
-    expires_at: Optional[datetime] = Field(default=None)
-
-
-# Response schemas for API endpoints
-class UserResponse(SQLModel, table=False):
-    id: str
-    name: str
-    email: str
-    role: UserRole
-    is_active: bool
-    is_verified: bool
-    npm: Optional[str]
-    nip: Optional[str]
-    phone: Optional[str]
-    lab_id: Optional[str]
-    created_at: str  # ISO format
-    updated_at: str  # ISO format
-
-
-class LabResponse(SQLModel, table=False):
-    id: str
-    code: str
-    name: str
-    location: str
-    capacity: int
-    operating_hours: Dict[str, Any]
-    head_id: Optional[str]
-    contact_person: str
-    contact_email: str
+class MaintenanceRecordCreate(SQLModel, table=False):
+    equipment_id: int
+    maintenance_type: MaintenanceType
+    scheduled_date: datetime
     description: str
-    created_at: str  # ISO format
+    performed_by: Optional[str] = Field(default=None, max_length=100)
+    cost: Optional[Decimal] = Field(default=Decimal("0"))
+    notes: str = Field(default="")
 
 
-class EquipmentResponse(SQLModel, table=False):
-    id: str
-    lab_id: str
-    code: str
-    name: str
-    brand: Optional[str]
-    model: Optional[str]
-    serial_no: Optional[str]
-    specification: Dict[str, Any]
-    status: EquipmentStatus
-    needs_head_approval: bool
-    calibration_due_date: Optional[str]  # ISO date format
-    created_at: str  # ISO format
+class MaintenanceRecordUpdate(SQLModel, table=False):
+    status: Optional[MaintenanceStatus] = Field(default=None)
+    completed_date: Optional[datetime] = Field(default=None)
+    performed_by: Optional[str] = Field(default=None, max_length=100)
+    cost: Optional[Decimal] = Field(default=None)
+    notes: Optional[str] = Field(default=None)
 
 
-class LoanResponse(SQLModel, table=False):
-    id: str
-    equipment_id: str
-    borrower_id: str
-    supervisor_id: Optional[str]
-    lab_id: str
-    start_time: str  # ISO format
-    end_time: str  # ISO format
-    purpose: str
-    course: Optional[str]
-    project: Optional[str]
-    status: LoanStatus
-    late_minutes: int
-    created_at: str  # ISO format
+class HelpTicketCreate(SQLModel, table=False):
+    subject: str = Field(max_length=200)
+    message: str
+    priority: str = Field(default="normal", max_length=20)
+    category: str = Field(default="general", max_length=50)
+
+
+class HelpTicketUpdate(SQLModel, table=False):
+    status: Optional[str] = Field(default=None, max_length=20)
+    assigned_to_id: Optional[int] = Field(default=None)
+
+
+class AppContentUpdate(SQLModel, table=False):
+    content: str
+    content_type: str = Field(default="markdown", max_length=20)
+    is_active: bool = Field(default=True)
+
+
+# Statistics and reporting schemas
+
+
+class EquipmentUsageStats(SQLModel, table=False):
+    equipment_id: int
+    equipment_name: str
+    total_borrowings: int
+    total_hours: float
+    average_duration: float
+    damage_reports: int
+    overdue_count: int
+
+
+class UserBorrowingStats(SQLModel, table=False):
+    user_id: int
+    user_name: str
+    total_borrowings: int
+    completed_borrowings: int
+    overdue_count: int
+    damage_reports: int
+
+
+class LabUsageStats(SQLModel, table=False):
+    lab_id: int
+    lab_name: str
+    total_equipment: int
+    total_borrowings: int
+    utilization_rate: float
+    average_booking_duration: float
+
+
+class PeriodStats(SQLModel, table=False):
+    period: str  # "2024-01", "2024-Q1", etc.
+    total_borrowings: int
+    completed_borrowings: int
+    overdue_count: int
+    damage_reports: int
+    unique_users: int
+    unique_equipment: int
